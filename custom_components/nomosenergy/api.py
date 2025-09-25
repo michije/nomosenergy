@@ -94,22 +94,26 @@ class NomosEnergyApi:
         end parameters.  Returns a list of items, each containing a
         timestamp and amount.
         """
-        token = await self._authenticate()
-        subscription_id = await self._get_subscription_id()
-        params = {
-            "start": start_date.isoformat(),
-            "end": end_date.isoformat(),
-        }
-        headers = {"Authorization": f"Bearer {token}"}
-        url = f"{API_BASE_URL}/subscriptions/{subscription_id}/prices"
-        try:
-            async with self._session.get(url, headers=headers, params=params) as resp:
-                resp.raise_for_status()
-                payload: Dict[str, Any] = await resp.json()
-                items: List[Dict[str, Any]] = payload.get("items", [])
-                return items
-        except ClientError as err:
-            raise RuntimeError(f"Failed to fetch price series: {err}") from err
+        for attempt in range(2):
+            token = await self._authenticate()
+            subscription_id = await self._get_subscription_id()
+            params = {
+                "start": start_date.isoformat(),
+                "end": end_date.isoformat(),
+            }
+            headers = {"Authorization": f"Bearer {token}"}
+            url = f"{API_BASE_URL}/subscriptions/{subscription_id}/prices"
+            try:
+                async with self._session.get(url, headers=headers, params=params) as resp:
+                    resp.raise_for_status()
+                    payload: Dict[str, Any] = await resp.json()
+                    items: List[Dict[str, Any]] = payload.get("items", [])
+                    return items
+            except ClientError as err:
+                if attempt == 0 and hasattr(err, 'status') and err.status == 401:
+                    self._token = None  # Clear expired token
+                    continue  # Retry with new token
+                raise RuntimeError(f"Failed to fetch price series: {err}") from err
 
     async def fetch_prices(self, start_date: date, end_date: date) -> List[Dict[str, Any]]:
         """Retrieve price data for the specified date range.
