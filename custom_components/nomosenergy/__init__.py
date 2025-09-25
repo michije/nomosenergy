@@ -51,18 +51,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Fetch data from Nomos Energy and prepare sensor values."""
         nonlocal last_update_time
 
+        # Determine current date and tomorrow's date in Berlin timezone
+        now_berlin = datetime.now(tz=berlin_tz)
+        today = now_berlin.date()
+        tomorrow = today + timedelta(days=1)
+
         try:
-            items = await api.fetch_prices()
+            items = await api.fetch_prices(today, tomorrow)
         except Exception as err:
             raise UpdateFailed(f"Error fetching data: {err}") from err
 
         # Build a mapping of sensor keys to price values
         data: Dict[str, Any] = {}
-
-        # Determine current date and tomorrow's date in Berlin timezone
-        now_berlin = datetime.now(tz=berlin_tz)
-        today = now_berlin.date()
-        tomorrow = today + timedelta(days=1)
 
         # Populate data for each returned item
         for item in items:

@@ -111,15 +111,10 @@ class NomosEnergyApi:
         except ClientError as err:
             raise RuntimeError(f"Failed to fetch price series: {err}") from err
 
-    async def fetch_prices(self) -> List[Dict[str, Any]]:
-        """Retrieve price data for today and tomorrow.
+    async def fetch_prices(self, start_date: date, end_date: date) -> List[Dict[str, Any]]:
+        """Retrieve price data for the specified date range.
 
         Returns a list of objects with ``timestamp`` (UTC ISO string) and
         ``amount`` (price in ct/kWh).
         """
-        # Determine today and tomorrow based on UTC to match the API's
-        # behaviour.  The API returns UTC timestamps; we convert them
-        # later when building the sensor data.
-        today = date.today()
-        tomorrow = today + timedelta(days=1)
-        return await self._get_price_series(start_date=today, end_date=tomorrow)
+        return await self._get_price_series(start_date=start_date, end_date=end_date)
