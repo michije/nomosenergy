@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict
@@ -105,6 +104,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Update diagnostic data
         last_update_time = datetime.now(tz=berlin_tz).isoformat()
         data["last_update_time"] = last_update_time
+        data["last_update_success"] = True
 
         return data
 
@@ -117,12 +117,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         update_interval=timedelta(hours=1),
     )
 
-    # Align first refresh to top of Berlin hour
-    berlin_now = datetime.now(tz=berlin_tz)
-    ms_until_next_hour = (60 - berlin_now.minute) * 60 * 1000 - berlin_now.second * 1000 - berlin_now.microsecond // 1000
-    if ms_until_next_hour > 0:
-        await asyncio.sleep(ms_until_next_hour / 1000)
-    await coordinator.async_refresh()
+    await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "coordinator": coordinator,
