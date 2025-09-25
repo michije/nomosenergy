@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import DeviceClass
+from homeassistant.components.sensor import SensorDeviceClass
 
 from .const import DOMAIN, HOURS_IN_DAY
 
@@ -97,7 +97,7 @@ async def async_setup_entry(
             NomosEnergySensorEntityDescription(
                 key="last_update_time",
                 name="Nomos Last Update Time",
-                device_class=DeviceClass.TIMESTAMP,
+                device_class=SensorDeviceClass.TIMESTAMP,
                 entity_category=EntityCategory.DIAGNOSTIC,
             ),
             entry.entry_id,
