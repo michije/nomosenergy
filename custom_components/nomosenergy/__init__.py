@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict
@@ -45,9 +46,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     berlin_tz = ZoneInfo("Europe/Berlin")
+    last_update_time = None  # Persist last successful update time across refreshes
 
     async def _async_update_data() -> Dict[str, Any]:
         """Fetch data from Nomos Energy and prepare sensor values."""
+        nonlocal last_update_time
+
         try:
             items = await api.fetch_prices()
         except Exception as err:
@@ -98,6 +102,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         current_key = f"today_{now_berlin.hour:02d}"
         data["current_price"] = data.get(current_key)
 
+        # Update diagnostic data
+        last_update_time = datetime.now(tz=berlin_tz).isoformat()
+        data["last_update_time"] = last_update_time
+
         return data
 
     coordinator = DataUpdateCoordinator(
@@ -109,7 +117,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         update_interval=timedelta(hours=1),
     )
 
-    await coordinator.async_config_entry_first_refresh()
+    # Align first refresh to top of Berlin hour
+    berlin_now = datetime.now(tz=berlin_tz)
+    ms_until_next_hour = (60 - berlin_now.minute) * 60 * 1000 - berlin_now.second * 1000 - berlin_now.microsecond // 1000
+    if ms_until_next_hour > 0:
+        await asyncio.sleep(ms_until_next_hour / 1000)
+    await coordinator.async_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "coordinator": coordinator,

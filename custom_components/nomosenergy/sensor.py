@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import DeviceClass
 
 from .const import DOMAIN, HOURS_IN_DAY
 
@@ -37,12 +38,17 @@ class NomosEnergySensor(CoordinatorEntity, SensorEntity):
         self._attr_unique_id = f"{entry_id}_{description.key}"
         # Human readable name
         self._attr_name = description.name
-        # All sensors measure monetary values in ct/kWh
-        self._attr_native_unit_of_measurement = "ct/kWh"
+        # Set unit for price sensors, none for diagnostics
+        if description.key in ("last_update_time", "last_update_success"):
+            self._attr_native_unit_of_measurement = None
+        else:
+            self._attr_native_unit_of_measurement = "ct/kWh"
 
     @property
     def native_value(self) -> Any:
         """Return the sensor value from the coordinator data."""
+        if self.entity_description.key == "last_update_success":
+            return self.coordinator.last_exception is None
         return self.coordinator.data.get(self.entity_description.key)
 
 
@@ -83,5 +89,30 @@ async def async_setup_entry(
                     entry.entry_id,
                 )
             )
+
+    # Create diagnostic sensors
+    sensors.append(
+        NomosEnergySensor(
+            coordinator,
+            NomosEnergySensorEntityDescription(
+                key="last_update_time",
+                name="Nomos Last Update Time",
+                device_class=DeviceClass.TIMESTAMP,
+                entity_category=EntityCategory.DIAGNOSTIC,
+            ),
+            entry.entry_id,
+        )
+    )
+    sensors.append(
+        NomosEnergySensor(
+            coordinator,
+            NomosEnergySensorEntityDescription(
+                key="last_update_success",
+                name="Nomos Last Update Success",
+                entity_category=EntityCategory.DIAGNOSTIC,
+            ),
+            entry.entry_id,
+        )
+    )
 
     async_add_entities(sensors)

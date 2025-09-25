@@ -12,6 +12,9 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 
 from .const import DOMAIN, CONF_CLIENT_ID, CONF_CLIENT_SECRET
+from .api import NomosEnergyApi
+
+import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,17 +27,31 @@ class NomosEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input: Dict[str, Any] | None = None) -> FlowResult:
         """Handle the initial step for the user to enter credentials."""
+        data_schema = vol.Schema({
+            vol.Required(CONF_CLIENT_ID): str,
+            vol.Required(CONF_CLIENT_SECRET): str,
+        })
+
         if user_input is not None:
+            # Validate credentials
+            session = aiohttp.ClientSession()
+            api = NomosEnergyApi(session, user_input[CONF_CLIENT_ID], user_input[CONF_CLIENT_SECRET])
+            try:
+                await api._authenticate()
+                await api._get_subscription_id()
+            except RuntimeError as err:
+                await session.close()
+                _LOGGER.error("Credential validation failed: %s", err)
+                errors = {"base": "auth"}
+                return self.async_show_form(step_id="user", data_schema=data_schema, errors=errors)
+            await session.close()
+
             # Prevent multiple instances
             existing = self._async_current_entries()
             if existing:
                 return self.async_abort(reason="single_instance_allowed")
             return self.async_create_entry(title="Nomos Energy", data=user_input)
 
-        data_schema = vol.Schema({
-            vol.Required(CONF_CLIENT_ID): str,
-            vol.Required(CONF_CLIENT_SECRET): str,
-        })
         return self.async_show_form(step_id="user", data_schema=data_schema)
 
     @staticmethod
