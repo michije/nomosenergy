@@ -102,7 +102,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         data["current_price"] = data.get(current_key)
 
         # Update diagnostic data
-        last_update_time = datetime.now(tz=berlin_tz).isoformat()
+        last_update_time = datetime.now(tz=berlin_tz)
         data["last_update_time"] = last_update_time
         data["last_update_success"] = True
 
