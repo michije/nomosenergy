@@ -1,0 +1,11 @@
+{
+  "domain": "nomosenergy",
+  "name": "Nomos Energy",
+  "version": "0.0.1",
+  "documentation": "https://github.com/michije/nomosenergy#readme",
+  "issue_tracker": "https://github.com/michije/nomosenergy/issues",
+  "codeowners": ["@michije"],
+  "requirements": [],
+  "config_flow": true,
+  "iot_class": "cloud_polling"
+}
