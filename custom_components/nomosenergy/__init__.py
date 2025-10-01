@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any, Dict
 
@@ -61,10 +62,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as err:
             raise UpdateFailed(f"Error fetching data: {err}") from err
 
-        # Build a mapping of sensor keys to price values
-        data: Dict[str, Any] = {}
+        # Collect sums and counts per hourly slot
+        hourly_sums = defaultdict(float)
+        hourly_counts = defaultdict(int)
 
-        # Populate data for each returned item
         for item in items:
             timestamp: str | None = item.get("timestamp")
             amount = item.get("amount")
@@ -80,22 +81,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             dt_berlin = dt_utc.astimezone(berlin_tz)
             date_ = dt_berlin.date()
             hour = dt_berlin.hour
-            key: str
             if date_ == today:
-                key = f"today_{hour:02d}"
+                hourly_key = f"today_{hour:02d}"
             elif date_ == tomorrow:
-                key = f"tomorrow_{hour:02d}"
+                hourly_key = f"tomorrow_{hour:02d}"
             else:
                 # Ignore any data outside today/tomorrow
                 continue
-            data[key] = amount
+            hourly_sums[hourly_key] += amount
+            hourly_counts[hourly_key] += 1
 
-        # Fill missing hours with None so sensors are created consistently
+        # Build a mapping of sensor keys to average price values
+        data: Dict[str, Any] = {}
         for h in range(HOURS_IN_DAY):
             k_today = f"today_{h:02d}"
             k_tomorrow = f"tomorrow_{h:02d}"
-            data.setdefault(k_today, None)
-            data.setdefault(k_tomorrow, None)
+            count_today = hourly_counts.get(k_today, 0)
+            count_tomorrow = hourly_counts.get(k_tomorrow, 0)
+            data[k_today] = hourly_sums[k_today] / count_today if count_today > 0 else None
+            data[k_tomorrow] = hourly_sums[k_tomorrow] / count_tomorrow if count_tomorrow > 0 else None
 
         # Determine current price for the current hour
         current_key = f"today_{now_berlin.hour:02d}"
