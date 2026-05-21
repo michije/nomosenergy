@@ -1,20 +1,55 @@
-"""The Nomos Energy integration."""
+"""The Nomos Energy integration.
+
+Sets up the DataUpdateCoordinator that fetches price data from the
+Nomos Energy API and pre-computes all sensor values so that individual
+sensor entities simply read from the coordinator's data dict.
+
+Data structure produced by _async_update_data
+---------------------------------------------
+{
+    # Current slot
+    "current_price":        float | None,   # total price ct/kWh
+    "current_price_start":  str | None,     # ISO timestamp (local)
+    "current_price_end":    str | None,     # ISO timestamp (local)
+    "next_price":           float | None,
+
+    # Today aggregates
+    "today_min":     float | None,
+    "today_max":     float | None,
+    "today_average": float | None,
+    "today_prices":  list[{"start": str, "price": float}],
+
+    # Tomorrow aggregates (None when not yet published)
+    "tomorrow_min":     float | None,
+    "tomorrow_max":     float | None,
+    "tomorrow_average": float | None,
+    "tomorrow_prices":  list[{"start": str, "price": float}],
+
+    # Optional price components (present only if API returns them)
+    "current_price_grid":    float | None,
+    "current_price_energy":  float | None,
+    "current_price_levies":  float | None,
+    "current_components":    dict | None,   # raw passthrough of all component fields
+
+    # Diagnostics
+    "last_update_time":    datetime,
+    "last_update_success": bool,
+}
+"""
 
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
-from datetime import datetime, timedelta
-from typing import Any, Dict
+from datetime import datetime, timedelta, timezone, date
+from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from zoneinfo import ZoneInfo
-
-from .api import NomosEnergyApi
+from .api import NomosEnergyApi, NomosConnectionError
 from .const import (
     DOMAIN,
     CONF_CLIENT_ID,
@@ -24,20 +59,22 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-
 PLATFORMS: list[str] = ["sensor"]
+
+# Known component field names returned by the Nomos API.  Additional
+# unknown fields are passed through as raw components.
+_COMPONENT_GRID_FIELDS = ("grid",)
+_COMPONENT_ENERGY_FIELDS = ("electricity", "energy")
+_COMPONENT_LEVIES_FIELDS = ("levies", "taxes", "tax")
 
 
 async def async_setup(_hass: HomeAssistant, _config: Dict[str, Any]) -> bool:
     """Set up the Nomos Energy integration via YAML is not supported."""
-    # This integration is config-entry only.  Prevent YAML configuration.
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Nomos Energy from a config entry."""
-    # Use HA's shared session instead of creating a private one.  HA manages
-    # the lifecycle of this session, so we must NOT close it ourselves.
     session = async_get_clientsession(hass)
     api = NomosEnergyApi(
         session,
@@ -45,85 +82,184 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data[CONF_CLIENT_SECRET],
     )
 
-    berlin_tz = ZoneInfo("Europe/Berlin")
-    last_update_time = None  # Persist last successful update time across refreshes
+    local_tz = ZoneInfo(hass.config.time_zone or "Europe/Berlin")
 
     async def _async_update_data() -> Dict[str, Any]:
-        """Fetch data from Nomos Energy and prepare sensor values."""
-        nonlocal last_update_time
+        """Fetch data from Nomos Energy and prepare all sensor values.
 
-        # Determine current date and tomorrow's date in Berlin timezone
-        now_berlin = datetime.now(tz=berlin_tz)
-        today = now_berlin.date()
-        tomorrow = today + timedelta(days=1)
+        All timestamp processing is done in UTC; local-time conversion
+        happens only at the point where we produce human-readable output.
+        This makes the logic correct across DST transitions (23- and 25-hour
+        days) because we iterate over actual API items rather than generating
+        fixed wall-clock slots.
+        """
+        now_utc = datetime.now(tz=timezone.utc)
+        now_local = now_utc.astimezone(local_tz)
+        today_local: date = now_local.date()
+        tomorrow_local: date = today_local + timedelta(days=1)
 
         try:
-            items = await api.fetch_prices(today, tomorrow)
+            items: List[Dict[str, Any]] = await api.fetch_prices(today_local, tomorrow_local)
+        except NomosConnectionError as err:
+            # Transient failure — tell HA to retry later
+            raise UpdateFailed(f"Connection error fetching prices: {err}") from err
         except Exception as err:
-            raise UpdateFailed(f"Error fetching data: {err}") from err
+            raise UpdateFailed(f"Unexpected error fetching prices: {err}") from err
 
-        # Collect sums and counts per interval slot.
-        # Slots are keyed as "{day}_{HH}_{MM}", e.g. "today_14_30".
-        # This handles both hourly (60-min) and 15-min interval responses
-        # dynamically: each timestamp is bucketed into INTERVAL_MINUTES slots.
-        interval_sums: Dict[str, float] = defaultdict(float)
-        interval_counts: Dict[str, int] = defaultdict(int)
+        # ------------------------------------------------------------------ #
+        # Bucket items into today / tomorrow lists (UTC, sorted)
+        # ------------------------------------------------------------------ #
+        today_items: List[Dict[str, Any]] = []
+        tomorrow_items: List[Dict[str, Any]] = []
 
         for item in items:
-            timestamp: str | None = item.get("timestamp")
+            ts_raw: Optional[str] = item.get("timestamp")
             amount = item.get("amount")
-            if timestamp is None:
+            if ts_raw is None or amount is None:
                 continue
-            # Skip null amounts rather than crashing or silently adding zero
-            if amount is None:
-                continue
-            # Parse UTC timestamp and convert to Berlin timezone
             try:
-                # Replace trailing 'Z' with +00:00 for fromisoformat compatibility
-                dt_utc = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                dt_utc = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
             except ValueError:
-                _LOGGER.warning("Invalid timestamp received: %s", timestamp)
+                _LOGGER.warning("Skipping item with invalid timestamp: %s", ts_raw)
                 continue
-            dt_berlin = dt_utc.astimezone(berlin_tz)
-            date_ = dt_berlin.date()
-            hour = dt_berlin.hour
-            # Snap minutes to the nearest INTERVAL_MINUTES boundary
-            minute_slot = (dt_berlin.minute // INTERVAL_MINUTES) * INTERVAL_MINUTES
+            # Classify by local date (handles DST correctly because we
+            # convert *each* timestamp independently)
+            dt_local = dt_utc.astimezone(local_tz)
+            local_date = dt_local.date()
+            if local_date == today_local:
+                today_items.append({"dt_utc": dt_utc, "amount": amount, "raw": item})
+            elif local_date == tomorrow_local:
+                tomorrow_items.append({"dt_utc": dt_utc, "amount": amount, "raw": item})
+            # Items outside today/tomorrow window are silently ignored
 
-            if date_ == today:
-                slot_key = f"today_{hour:02d}_{minute_slot:02d}"
-            elif date_ == tomorrow:
-                slot_key = f"tomorrow_{hour:02d}_{minute_slot:02d}"
-            else:
-                # Ignore any data outside today/tomorrow
-                continue
+        today_items.sort(key=lambda x: x["dt_utc"])
+        tomorrow_items.sort(key=lambda x: x["dt_utc"])
 
-            interval_sums[slot_key] += amount
-            interval_counts[slot_key] += 1
+        # ------------------------------------------------------------------ #
+        # Helper: build price curve list for attributes
+        # ------------------------------------------------------------------ #
+        def _price_curve(bucket: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            return [
+                {
+                    "start": entry["dt_utc"].astimezone(local_tz).isoformat(),
+                    "price": entry["amount"],
+                }
+                for entry in bucket
+            ]
 
-        # Build a mapping of sensor keys to average price values.
-        # We generate keys for every INTERVAL_MINUTES slot in a day so that
-        # sensors exist even before data arrives (value will be None).
-        data: Dict[str, Any] = {}
-        minutes_per_day = 24 * 60
-        for day in ("today", "tomorrow"):
-            for total_minutes in range(0, minutes_per_day, INTERVAL_MINUTES):
-                h = total_minutes // 60
-                m = total_minutes % 60
-                key = f"{day}_{h:02d}_{m:02d}"
-                count = interval_counts.get(key, 0)
-                data[key] = interval_sums[key] / count if count > 0 else None
+        # ------------------------------------------------------------------ #
+        # Helper: extract aggregate stats
+        # ------------------------------------------------------------------ #
+        def _stats(bucket: List[Dict[str, Any]]):
+            if not bucket:
+                return None, None, None
+            prices = [entry["amount"] for entry in bucket]
+            return min(prices), max(prices), sum(prices) / len(prices)
 
-        # Determine current price for the current interval
-        current_minute_slot = (now_berlin.minute // INTERVAL_MINUTES) * INTERVAL_MINUTES
-        current_key = f"today_{now_berlin.hour:02d}_{current_minute_slot:02d}"
-        data["current_price"] = data.get(current_key)
+        today_min, today_max, today_avg = _stats(today_items)
+        tomorrow_min, tomorrow_max, tomorrow_avg = _stats(tomorrow_items)
 
-        # Update diagnostic data
-        last_update_time = datetime.now(tz=berlin_tz)
-        data["last_update_time"] = last_update_time
-        data["last_update_success"] = True
+        # ------------------------------------------------------------------ #
+        # Find current slot and next slot
+        # ------------------------------------------------------------------ #
+        # Snap now_utc to the INTERVAL_MINUTES boundary (floor)
+        slot_seconds = INTERVAL_MINUTES * 60
+        now_epoch = now_utc.timestamp()
+        current_slot_start_epoch = (now_epoch // slot_seconds) * slot_seconds
+        current_slot_start = datetime.fromtimestamp(current_slot_start_epoch, tz=timezone.utc)
+        next_slot_start = current_slot_start + timedelta(minutes=INTERVAL_MINUTES)
 
+        def _find_slot(
+            bucket: List[Dict[str, Any]], slot_start: datetime
+        ) -> Optional[Dict[str, Any]]:
+            """Return the item whose slot contains slot_start."""
+            for entry in bucket:
+                diff = abs((entry["dt_utc"] - slot_start).total_seconds())
+                if diff < slot_seconds:
+                    return entry
+            return None
+
+        all_items = today_items + tomorrow_items
+        current_entry = _find_slot(all_items, current_slot_start)
+        next_entry = _find_slot(all_items, next_slot_start)
+
+        current_price: Optional[float] = current_entry["amount"] if current_entry else None
+        next_price: Optional[float] = next_entry["amount"] if next_entry else None
+
+        current_start_str: Optional[str] = (
+            current_slot_start.astimezone(local_tz).isoformat() if current_entry else None
+        )
+        current_end_str: Optional[str] = (
+            (current_slot_start + timedelta(minutes=INTERVAL_MINUTES))
+            .astimezone(local_tz)
+            .isoformat()
+            if current_entry
+            else None
+        )
+
+        # ------------------------------------------------------------------ #
+        # Price components
+        # ------------------------------------------------------------------ #
+        current_components: Optional[Dict[str, Any]] = None
+        current_price_grid: Optional[float] = None
+        current_price_energy: Optional[float] = None
+        current_price_levies: Optional[float] = None
+
+        if current_entry:
+            raw = current_entry["raw"]
+            # Collect component fields: either a nested "components" dict or
+            # top-level fields alongside "amount"
+            components_src: Dict[str, Any] = raw.get("components") or {}
+            # Also check top-level fields (exclude known non-component keys)
+            _non_component_keys = {"timestamp", "amount", "id", "subscriptionId"}
+            for k, v in raw.items():
+                if k not in _non_component_keys and isinstance(v, (int, float)):
+                    components_src.setdefault(k, v)
+
+            if components_src:
+                current_components = components_src
+                # Map to well-known sensor keys
+                for field in _COMPONENT_GRID_FIELDS:
+                    if field in components_src:
+                        current_price_grid = components_src[field]
+                        break
+                for field in _COMPONENT_ENERGY_FIELDS:
+                    if field in components_src:
+                        current_price_energy = components_src[field]
+                        break
+                for field in _COMPONENT_LEVIES_FIELDS:
+                    if field in components_src:
+                        current_price_levies = components_src[field]
+                        break
+
+        # ------------------------------------------------------------------ #
+        # Assemble coordinator data dict
+        # ------------------------------------------------------------------ #
+        data: Dict[str, Any] = {
+            # Current slot
+            "current_price": current_price,
+            "current_price_start": current_start_str,
+            "current_price_end": current_end_str,
+            "next_price": next_price,
+            # Today
+            "today_min": today_min,
+            "today_max": today_max,
+            "today_average": today_avg,
+            "today_prices": _price_curve(today_items),
+            # Tomorrow
+            "tomorrow_min": tomorrow_min,
+            "tomorrow_max": tomorrow_max,
+            "tomorrow_average": tomorrow_avg,
+            "tomorrow_prices": _price_curve(tomorrow_items),
+            # Components
+            "current_price_grid": current_price_grid,
+            "current_price_energy": current_price_energy,
+            "current_price_levies": current_price_levies,
+            "current_components": current_components,
+            # Diagnostics
+            "last_update_time": now_utc,
+            "last_update_success": True,
+        }
         return data
 
     coordinator = DataUpdateCoordinator(
@@ -131,7 +267,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER,
         name="Nomos Energy data",
         update_method=_async_update_data,
-        # Update every 15 minutes to align with new 15-min price availability
         update_interval=timedelta(minutes=15),
     )
 
@@ -150,6 +285,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        # HA's shared session is managed by HA itself; do not close it here.
         hass.data[DOMAIN].pop(entry.entry_id)
     return unload_ok

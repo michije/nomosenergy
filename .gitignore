@@ -1,0 +1,10 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Editor / OS artefacts
+.DS_Store
+*.swp
+.idea/
+.vscode/
