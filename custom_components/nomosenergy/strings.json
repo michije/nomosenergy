@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Nomos Energy",
+        "description": "Enter your Nomos Energy API credentials. You can find these in your Nomos Energy account settings.",
+        "data": {
+          "client_id": "Client ID",
+          "client_secret": "Client Secret"
+        }
+      }
+    },
+    "error": {
+      "auth": "Authentication failed. Please check your Client ID and Client Secret."
+    },
+    "abort": {
+      "single_instance_allowed": "Only a single instance of the Nomos Energy integration is supported."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Nomos Energy Options",
+        "description": "No configurable options are available at this time."
+      }
+    }
+  }
+}

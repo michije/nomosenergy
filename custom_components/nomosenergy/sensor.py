@@ -3,23 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, List
 
-from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
+from homeassistant.components.sensor import SensorEntity, SensorEntityDescription, SensorDeviceClass
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.components.sensor import SensorDeviceClass
 
-from .const import DOMAIN, HOURS_IN_DAY
+from .const import DOMAIN, INTERVAL_MINUTES
 
 
 @dataclass
 class NomosEnergySensorEntityDescription(SensorEntityDescription):
     """Describes a Nomos Energy sensor."""
 
-    key: str
+    key: str = ""
 
 
 class NomosEnergySensor(CoordinatorEntity, SensorEntity):
@@ -75,13 +74,17 @@ async def async_setup_entry(
         )
     )
 
-    # Create sensors for each hour today and tomorrow
+    # Create sensors for each 15-minute interval today and tomorrow.
+    # Keys use the format "{day}_{HH}_{MM}", e.g. "today_14_30".
+    # Friendly names use the format "Nomos Today 14:30".
+    minutes_per_day = 24 * 60
     for day in ("today", "tomorrow"):
-        for hour in range(HOURS_IN_DAY):
-            key = f"{day}_{hour:02d}"
-            # Friendly name e.g. "Nomos Today 14:00"
-            human_day = "Today" if day == "today" else "Tomorrow"
-            name = f"Nomos {human_day} {hour:02d}:00"
+        human_day = "Today" if day == "today" else "Tomorrow"
+        for total_minutes in range(0, minutes_per_day, INTERVAL_MINUTES):
+            h = total_minutes // 60
+            m = total_minutes % 60
+            key = f"{day}_{h:02d}_{m:02d}"
+            name = f"Nomos {human_day} {h:02d}:{m:02d}"
             sensors.append(
                 NomosEnergySensor(
                     coordinator,

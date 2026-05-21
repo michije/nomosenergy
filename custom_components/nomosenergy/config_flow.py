@@ -10,11 +10,10 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DOMAIN, CONF_CLIENT_ID, CONF_CLIENT_SECRET
 from .api import NomosEnergyApi
-
-import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,27 +31,25 @@ class NomosEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_CLIENT_SECRET): str,
         })
 
+        errors: Dict[str, str] = {}
+
         if user_input is not None:
-            # Validate credentials
-            session = aiohttp.ClientSession()
+            # Use HA's shared session; do NOT close it here.
+            session = async_get_clientsession(self.hass)
             api = NomosEnergyApi(session, user_input[CONF_CLIENT_ID], user_input[CONF_CLIENT_SECRET])
             try:
-                await api._authenticate()
-                await api._get_subscription_id()
+                await api.validate_credentials()
             except RuntimeError as err:
-                await session.close()
                 _LOGGER.error("Credential validation failed: %s", err)
                 errors = {"base": "auth"}
-                return self.async_show_form(step_id="user", data_schema=data_schema, errors=errors)
-            await session.close()
+            else:
+                # Prevent multiple instances
+                existing = self._async_current_entries()
+                if existing:
+                    return self.async_abort(reason="single_instance_allowed")
+                return self.async_create_entry(title="Nomos Energy", data=user_input)
 
-            # Prevent multiple instances
-            existing = self._async_current_entries()
-            if existing:
-                return self.async_abort(reason="single_instance_allowed")
-            return self.async_create_entry(title="Nomos Energy", data=user_input)
-
-        return self.async_show_form(step_id="user", data_schema=data_schema)
+        return self.async_show_form(step_id="user", data_schema=data_schema, errors=errors)
 
     @staticmethod
     @callback
