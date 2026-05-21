@@ -13,7 +13,7 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DOMAIN, CONF_CLIENT_ID, CONF_CLIENT_SECRET
-from .api import NomosEnergyApi
+from .api import NomosEnergyApi, NomosAuthError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class NomosEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             api = NomosEnergyApi(session, user_input[CONF_CLIENT_ID], user_input[CONF_CLIENT_SECRET])
             try:
                 await api.validate_credentials()
-            except RuntimeError as err:
+            except (NomosAuthError, RuntimeError, ValueError) as err:
                 _LOGGER.error("Credential validation failed: %s", err)
                 errors = {"base": "auth"}
             else:
